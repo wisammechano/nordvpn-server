@@ -19,6 +19,10 @@ services:
     volumes:
       - ./gluetun:/gluetun
       - ./post-iptables-rules-gluetun.txt:/iptables/post-rules.txt
+    entrypoint: >
+      /bin/sh -c "
+      (sleep 10; ip route add 10.13.13.0/24 dev wg0 table 51820 2>/dev/null || true) &
+      exec /gluetun-entrypoint"
     environment:
       # NordVPN settings
       - VPN_SERVICE_PROVIDER=nordvpn
@@ -28,14 +32,14 @@ services:
       - SERVER_CITIES=${NORD_SERVER_CITIES}
 
       # WireGuard subnet configuration
-      - WG_SUBNET=${WG_SUBNET:-10.13.13.0/24}
+      - WG_SUBNET=10.13.13.0/24
       
       # HTTP proxy
       - HTTPPROXY=on
       
       # Control server (web interface)
       - HTTP_CONTROL_SERVER_ADDRESS=:8000
-      - HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE=${HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE}      
+      - HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE={"auth":"basic","username":"${GLUETUN_USER}","password":"${GLUETUN_PASS}"}
       # Timezone
       - TZ=America/New_York
       
@@ -70,36 +74,6 @@ services:
       - ./wg-easy:/etc/wireguard
     restart: unless-stopped
 
-
-#  gluetun-init:
-#    image: docker:cli
-#    network_mode: none
-#    volumes:
-#      - /var/run/docker.sock:/var/run/docker.sock
-#      - ./gluetun-init.sh:/init.sh:ro
-#    command: sh /init.sh
-#    depends_on:
-#      - gluetun
-#    restart: "no"
-
-#  vpn-controller:
-#    build: ./frontend
-#    container_name: vpn-controller
-#    ports:
-#      - 8080:3000
-#    environment:
-#      - GLUETUN_API=http://gluetun:8000
-#      - SERVERS_PATH=/gluetun/servers.json
-#      # Optional: Add if you enabled auth on Gluetun
-#      - GLUETUN_AUTH=${GLUETUN_AUTH}
-#    volumes:
-#      - ./gluetun:/gluetun:ro
-#      - /var/run/docker.sock:/var/run/docker.sock
-#      - ./.env:/.env
-#    depends_on:
-#      - gluetun
-#    restart: unless-stopped
-
   vpn-controller:
     image: node:alpine
     container_name: vpn-controller
@@ -109,7 +83,7 @@ services:
     environment:
       - GLUETUN_API=http://gluetun:8000
       - SERVERS_PATH=/gluetun/servers.json
-      - GLUETUN_AUTH=${GLUETUN_AUTH}
+      - GLUETUN_AUTH=${GLUETUN_USER}:${GLUETUN_PASS}
       - NODE_ENV=production
     volumes:
       - ./vpn-controller:/app
@@ -119,7 +93,7 @@ services:
       - vpn-controller-nm:/app/node_modules  # Cache node_modules
     depends_on:
       - gluetun
-    command: sh -c "npm ci --only=production && node server.js"
+    command: sh -c "npm install --no-save && node server.js"
     restart: unless-stopped
 
 volumes:
