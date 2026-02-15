@@ -1,0 +1,126 @@
+---
+services:
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: gluetun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - 9999:8888/tcp # HTTP proxy
+      - 8000:8000/tcp # Built-in control server (web UI)
+      - 8388:8388/tcp # Shadowsocks
+      - 8388:8388/udp # Shadowsocks
+      - 51821:51821/tcp # wg-easy web UI
+      - 51820:51820/udp
+    volumes:
+      - ./gluetun:/gluetun
+      - ./post-iptables-rules-gluetun.txt:/iptables/post-rules.txt
+    environment:
+      # NordVPN settings
+      - VPN_SERVICE_PROVIDER=nordvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${NORD_PRIVATE_KEY}
+      - SERVER_COUNTRIES=${NORD_SERVER_COUNTRIES:-United States}
+      - SERVER_CITIES=${NORD_SERVER_CITIES}
+
+      # WireGuard subnet configuration
+      - WG_SUBNET=${WG_SUBNET:-10.13.13.0/24}
+      
+      # HTTP proxy
+      - HTTPPROXY=on
+      
+      # Control server (web interface)
+      - HTTP_CONTROL_SERVER_ADDRESS=:8000
+      - HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE=${HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE}      
+      # Timezone
+      - TZ=America/New_York
+      
+      # Server list updater (update weekly)
+      - UPDATER_PERIOD=168h
+      
+      # Firewall
+      - FIREWALL_OUTBOUND_SUBNETS=192.168.88.0/24  # Your LAN subnet
+      - FIREWALL_INPUT_PORTS=51820,51821,8000,8388,8888
+      - FIREWALL=on
+
+      # DNS
+      - DNS_ADDRESS=192.168.88.1
+      - DOT=off # Disable DNS over TLS
+    restart: unless-stopped
+
+
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy
+    container_name: wg-easy
+    network_mode: service:gluetun
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - WG_HOST=192.168.88.65
+      - PASSWORD_HASH=${WG_PASSWORD_HASH}
+      - WG_DEFAULT_DNS=192.168.88.1
+      - WG_DEFAULT_ADDRESS=10.13.13.x   # Different subnet than cloudbm
+      - WG_ALLOWED_IPS=0.0.0.0/0
+    volumes:
+      - ./wg-easy:/etc/wireguard
+    restart: unless-stopped
+
+
+#  gluetun-init:
+#    image: docker:cli
+#    network_mode: none
+#    volumes:
+#      - /var/run/docker.sock:/var/run/docker.sock
+#      - ./gluetun-init.sh:/init.sh:ro
+#    command: sh /init.sh
+#    depends_on:
+#      - gluetun
+#    restart: "no"
+
+#  vpn-controller:
+#    build: ./frontend
+#    container_name: vpn-controller
+#    ports:
+#      - 8080:3000
+#    environment:
+#      - GLUETUN_API=http://gluetun:8000
+#      - SERVERS_PATH=/gluetun/servers.json
+#      # Optional: Add if you enabled auth on Gluetun
+#      - GLUETUN_AUTH=${GLUETUN_AUTH}
+#    volumes:
+#      - ./gluetun:/gluetun:ro
+#      - /var/run/docker.sock:/var/run/docker.sock
+#      - ./.env:/.env
+#    depends_on:
+#      - gluetun
+#    restart: unless-stopped
+
+  vpn-controller:
+    image: node:alpine
+    container_name: vpn-controller
+    working_dir: /app
+    ports:
+      - 8080:3000
+    environment:
+      - GLUETUN_API=http://gluetun:8000
+      - SERVERS_PATH=/gluetun/servers.json
+      - GLUETUN_AUTH=${GLUETUN_AUTH}
+      - NODE_ENV=production
+    volumes:
+      - ./vpn-controller:/app
+      - ./gluetun:/gluetun:ro
+      - ./.env:/.env
+      - /var/run/docker.sock:/var/run/docker.sock
+      - vpn-controller-nm:/app/node_modules  # Cache node_modules
+    depends_on:
+      - gluetun
+    command: sh -c "npm ci --only=production && node server.js"
+    restart: unless-stopped
+
+volumes:
+  vpn-controller-nm:

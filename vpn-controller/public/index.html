@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gluetun VPN Controller</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        
+        .status {
+            padding: 12px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.connected .status-indicator {
+            background: #28a745;
+        }
+        
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.disconnected .status-indicator {
+            background: #dc3545;
+        }
+        
+        .status.loading {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        .status.loading .status-indicator {
+            background: #ffc107;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        select, input, button {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+        
+        select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        select:disabled {
+            background: #f5f5f5;
+            cursor: not-allowed;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            margin-top: 10px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+        }
+        
+        button:active:not(:disabled) {
+            transform: translateY(0);
+        }
+        
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        button.secondary {
+            background: #6c757d;
+        }
+        
+        button.danger {
+            background: #dc3545;
+        }
+        
+        .current-location {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .current-location p {
+            margin: 5px 0;
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .current-location strong {
+            color: #333;
+        }
+        
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 10px;
+            font-size: 14px;
+            display: none;
+        }
+        
+        .error.show {
+            display: block;
+        }
+        
+        .info-text {
+            font-size: 13px;
+            color: #777;
+            margin-top: 5px;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .server-count {
+            font-size: 12px;
+            color: #999;
+            margin-left: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌍 VPN Location Controller</h1>
+        
+        <div id="status" class="status loading">
+            <span class="status-indicator"></span>
+            <span>Connecting to VPN server...</span>
+        </div>
+        
+        <div class="current-location" id="currentLocation" style="display:none;">
+            <p><strong>Status:</strong> <span id="vpnStatus">Unknown</span></p>
+            <p><strong>Current IP:</strong> <span id="currentIp">Loading...</span></p>
+            <p><strong>Location:</strong> <span id="currentCountry">Loading...</span></p>
+            <p><strong>City:</strong> <span id="currentCity">Loading...</span></p>
+        </div>
+        
+        <div class="form-group">
+            <label for="country">
+                Select Country
+                <span class="server-count" id="countryCount"></span>
+            </label>
+            <select id="country" disabled>
+                <option value="">Loading countries...</option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label for="city">
+                City (Optional)
+                <span class="server-count" id="cityCount"></span>
+            </label>
+            <select id="city" disabled>
+                <option value="">-- Select Country First --</option>
+            </select>
+            <p class="info-text">Leave blank for random city selection</p>
+        </div>
+        
+        <button id="connectBtn" onclick="changeLocation()" disabled>
+            <span id="connectBtnText">Connect to Selected Location</span>
+        </button>
+        <button onclick="getCurrentStatus()" class="secondary">Refresh Status</button>
+        <button onclick="restartVPN()" class="danger">Restart VPN Connection</button>
+        
+        <div id="error" class="error"></div>
+    </div>
+
+    <script>
+        let serversData = {};
+        
+        // Load available servers on page load
+        async function loadServers() {
+            try {
+                const response = await fetch('/api/servers');
+                serversData = await response.json();
+                
+                const countrySelect = document.getElementById('country');
+                countrySelect.innerHTML = '<option value="">-- Select Country --</option>';
+                
+                const countries = Object.keys(serversData).sort();
+                document.getElementById('countryCount').textContent = `(${countries.length} available)`;
+                
+                countries.forEach(country => {
+                    const option = document.createElement('option');
+                    option.value = country;
+                    option.textContent = country;
+                    countrySelect.appendChild(option);
+                });
+                
+                countrySelect.disabled = false;
+                document.getElementById('connectBtn').disabled = false;
+                
+            } catch (error) {
+                showError('Failed to load server list: ' + error.message);
+            }
+        }
+        
+        // Handle country selection
+        document.getElementById('country').addEventListener('change', function() {
+            const citySelect = document.getElementById('city');
+            const country = this.value;
+            
+            citySelect.innerHTML = '<option value="">-- Any City --</option>';
+            
+            if (country && serversData[country]) {
+                citySelect.disabled = false;
+                const cities = serversData[country];
+                document.getElementById('cityCount').textContent = `(${cities.length} available)`;
+                
+                cities.forEach(city => {
+                    const option = document.createElement('option');
+                    option.value = city;
+                    option.textContent = city;
+                    citySelect.appendChild(option);
+                });
+            } else {
+                citySelect.disabled = true;
+                document.getElementById('cityCount').textContent = '';
+                citySelect.innerHTML = '<option value="">-- Select Country First --</option>';
+            }
+        });
+        
+        async function getCurrentStatus() {
+            try {
+                showStatus('loading', 'Checking VPN status...');
+                
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                document.getElementById('vpnStatus').textContent = data.connected ? 'Connected ✓' : 'Disconnected ✗';
+                document.getElementById('currentIp').textContent = data.publicIp || 'Unknown';
+                document.getElementById('currentCountry').textContent = data.country || 'Unknown';
+                document.getElementById('currentCity').textContent = data.city || 'Unknown';
+                document.getElementById('currentLocation').style.display = 'block';
+                
+                if (data.connected) {
+                    showStatus('connected', `✓ Connected - ${data.country || 'Unknown'}${data.city ? ', ' + data.city : ''}`);
+                } else {
+                    showStatus('disconnected', '✗ VPN Disconnected');
+                }
+                
+                clearError();
+            } catch (error) {
+                showStatus('disconnected', '✗ Unable to connect to VPN server');
+                showError('Error: ' + error.message);
+                document.getElementById('currentLocation').style.display = 'none';
+            }
+        }
+        
+        async function changeLocation() {
+            const country = document.getElementById('country').value;
+            const city = document.getElementById('city').value;
+            const btn = document.getElementById('connectBtn');
+            const btnText = document.getElementById('connectBtnText');
+            
+            if (!country) {
+                showError('Please select a country');
+                return;
+            }
+            
+            try {
+                btn.disabled = true;
+                btnText.innerHTML = '<span class="loading-spinner"></span> Changing location...';
+                showStatus('loading', 'Changing VPN location...');
+                clearError();
+                
+                const response = await fetch('/api/change-location', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ country, city })
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || 'Failed to change location');
+                }
+                
+                showStatus('loading', 'Reconnecting VPN tunnel...');
+                
+                // Wait for reconnection
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                // Get new status
+                await getCurrentStatus();
+                
+            } catch (error) {
+                showStatus('disconnected', '✗ Failed to change location');
+                showError('Error: ' + error.message);
+            } finally {
+                btn.disabled = false;
+                btnText.textContent = 'Connect to Selected Location';
+            }
+        }
+        
+        async function restartVPN() {
+            if (!confirm('Are you sure you want to restart the VPN connection?')) {
+                return;
+            }
+            
+            try {
+                showStatus('loading', 'Restarting VPN...');
+                clearError();
+                
+                const response = await fetch('/api/restart', {
+                    method: 'POST'
+                });
+                
+                const result = await response.json();
+                
+                if (!response.ok || result.error) {
+                    throw new Error(result.error || 'Failed to restart VPN');
+                }
+                
+                // Wait for restart
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                // Get new status
+                await getCurrentStatus();
+                
+            } catch (error) {
+                showStatus('disconnected', '✗ Failed to restart VPN');
+                showError('Error: ' + error.message);
+            }
+        }
+        
+        function showStatus(type, message) {
+            const statusEl = document.getElementById('status');
+            statusEl.className = `status ${type}`;
+            statusEl.innerHTML = `<span class="status-indicator"></span><span>${message}</span>`;
+        }
+        
+        function showError(message) {
+            const errorEl = document.getElementById('error');
+            errorEl.textContent = message;
+            errorEl.classList.add('show');
+        }
+        
+        function clearError() {
+            const errorEl = document.getElementById('error');
+            errorEl.classList.remove('show');
+        }
+        
+        // Initialize
+        loadServers();
+        getCurrentStatus();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(getCurrentStatus, 30000);
+    </script>
+</body>
+</html>
