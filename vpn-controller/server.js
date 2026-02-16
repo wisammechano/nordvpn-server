@@ -5,9 +5,30 @@ const fs = require('fs').promises;
 const app = express();
 const PORT = 3000;
 const GLUETUN_API = process.env.GLUETUN_API || 'http://gluetun:8000';
-const GLUETUN_AUTH = process.env.GLUETUN_AUTH || null; // Format: "username:password" for Basic Auth
+const GLUETUN_AUTH = process.env.GLUETUN_AUTH || null;
+const REQUIRE_AUTH = process.env.REQUIRE_AUTH === 'true';
 
 app.use(express.json());
+
+// Basic auth middleware
+function requireAuth(req, res, next) {
+  if (!REQUIRE_AUTH) {
+    return next();
+  }
+
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+
+  const credentials = Buffer.from(authHeader.split(' ')[1], 'base64').toString();
+  if (GLUETUN_AUTH && credentials !== GLUETUN_AUTH) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  next();
+}
+
 app.use(express.static('public'));
 
 // Helper function to make authenticated requests to Gluetun
@@ -24,15 +45,32 @@ async function gluetunFetch(endpoint, options = {}) {
     headers
   });
 
+  const text = await response.text();
+  
+  // Handle different response types
+  if (response.status === 401) {
+    throw new Error('Unauthorized: Invalid Gluetun credentials');
+  }
+  
   if (!response.ok) {
     throw new Error(`Gluetun API error: ${response.status} ${response.statusText}`);
   }
 
-  return response.json();
+  // Check if response is just plain text (like "running")
+  if (text && !text.startsWith('{') && !text.startsWith('[')) {
+    return { message: text.trim() };
+  }
+
+  // Try to parse JSON
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { message: text || 'Success' };
+  }
 }
 
 // Get current VPN status
-app.get('/api/status', async (req, res) => {
+app.get('/api/status', requireAuth, async (req, res) => {
   try {
     const [publicIp, vpnStatus] = await Promise.all([
       gluetunFetch('/v1/publicip/ip'),
@@ -40,12 +78,12 @@ app.get('/api/status', async (req, res) => {
     ]);
 
     res.json({
-      connected: vpnStatus.status === 'running',
+      connected: vpnStatus.status === 'running' || vpnStatus.message === 'running',
       publicIp: publicIp.public_ip,
       country: publicIp.country,
       region: publicIp.region,
       city: publicIp.city,
-      status: vpnStatus.status
+      status: vpnStatus.status || vpnStatus.message
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -53,17 +91,24 @@ app.get('/api/status', async (req, res) => {
 });
 
 // Get available servers from servers.json
-app.get('/api/servers', async (req, res) => {
+app.get('/api/servers', requireAuth, async (req, res) => {
   try {
     const serversPath = process.env.SERVERS_PATH || '/gluetun/servers.json';
     const serversData = await fs.readFile(serversPath, 'utf-8');
     const servers = JSON.parse(serversData);
 
-    // Extract unique countries and cities for nordvpn
-    const nordvpnServers = servers.nordvpn || [];
+    // Get NordVPN servers from the correct structure
+    const nordvpnData = servers.nordvpn || {};
+    const nordvpnServers = nordvpnData.servers || [];
+    
+    // Filter only WireGuard servers
+    const wireguardServers = nordvpnServers.filter(server => 
+      server.vpn === 'wireguard'
+    );
+
     const countriesMap = new Map();
 
-    nordvpnServers.forEach(server => {
+    wireguardServers.forEach(server => {
       const country = server.country;
       if (!countriesMap.has(country)) {
         countriesMap.set(country, new Set());
@@ -78,10 +123,12 @@ app.get('/api/servers', async (req, res) => {
       result[country] = Array.from(cities).sort();
     });
 
+    console.log(`Loaded ${wireguardServers.length} WireGuard servers from ${Object.keys(result).length} countries`);
+    
     res.json(result);
   } catch (error) {
     console.error('Error reading servers.json:', error);
-    // Fallback to hardcoded list if file not found
+    // Fallback to common NordVPN locations
     res.json({
       'United States': ['Atlanta', 'Buffalo', 'Charlotte', 'Chicago', 'Dallas', 'Denver', 'Los Angeles', 'Manassas', 'Miami', 'New York', 'Phoenix', 'Saint Louis', 'Salt Lake City', 'San Francisco', 'Seattle'],
       'United Kingdom': ['London'],
@@ -92,69 +139,124 @@ app.get('/api/servers', async (req, res) => {
       'Switzerland': ['Zurich'],
       'Australia': ['Adelaide', 'Brisbane', 'Melbourne', 'Perth', 'Sydney'],
       'Japan': ['Tokyo'],
-      'Singapore': ['Singapore'],
-      'Sweden': ['Stockholm'],
-      'Norway': ['Oslo'],
-      'Denmark': ['Copenhagen'],
-      'Italy': ['Milan'],
-      'Spain': ['Madrid'],
-      'Belgium': ['Brussels'],
-      'Austria': ['Vienna'],
-      'Poland': ['Warsaw'],
-      'Finland': ['Helsinki'],
-      'Ireland': ['Dublin']
+      'Singapore': ['Singapore']
     });
   }
 });
 
 // Change VPN location
-app.post('/api/change-location', async (req, res) => {
+app.post('/api/change-location', requireAuth, async (req, res) => {
   try {
     const { country, city } = req.body;
 
-    // 1. Update the settings "on-the-fly"
-    // This is the undocumented but fully functional 'PUT' route
-    await gluetunFetch('/v1/vpn/settings', {
+    // Get current settings
+    const currentSettings = await gluetunFetch('/v1/vpn/settings', { method: 'GET' });
+
+    // Store original values for comparison
+    const originalCountries = currentSettings.provider.server_selection.countries || [];
+    const originalCities = currentSettings.provider.server_selection.cities || [];
+    
+    const newCountries = [country];
+    const newCities = city ? [city] : [];
+
+    // Check if settings actually changed
+    const settingsChanged = 
+      JSON.stringify(originalCountries) !== JSON.stringify(newCountries) ||
+      JSON.stringify(originalCities) !== JSON.stringify(newCities);
+
+    if (!settingsChanged) {
+      return res.json({
+        success: true,
+        noChange: true,
+        message: `Already connected to ${country}${city ? ', ' + city : ''}. No change needed.`
+      });
+    }
+
+    // Modify settings
+    currentSettings.provider.server_selection.countries = newCountries;
+    currentSettings.provider.server_selection.cities = newCities;
+
+    // Update settings
+    const updateResponse = await gluetunFetch('/v1/vpn/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        vpn: {
-          provider: {
-            server_selection: {
-              countries: [country],
-              cities: city ? [city] : []
-            }
-          }
-        }
-      })
+      body: JSON.stringify(currentSettings)
     });
 
-    // 2. (Optional) Update .env so it sticks if the server reboots later
-    // Keep your file-writing logic here as a "background" persistence task
-
+    // Check if Gluetun returned "running" or similar
+    const responseMsg = updateResponse.message || updateResponse.status || 'updated';
+    
     res.json({
       success: true,
-      message: `Location changed to ${country}. Tunnel is updating.`
+      changed: true,
+      message: `Location updated to ${country}${city ? ', ' + city : ''}. ${responseMsg === 'running' ? 'VPN is reconnecting.' : 'Settings applied.'}`,
+      gluetunResponse: responseMsg
+    });
+
+  } catch (error) {
+    console.error('Update Failed:', error);
+    
+    if (error.message.includes('Unauthorized')) {
+      return res.status(401).json({ error: 'Unauthorized: Check Gluetun API credentials' });
+    }
+    
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all raw settings as JSON
+app.get('/api/settings/raw', requireAuth, async (req, res) => {
+  try {
+    const rawSettings = await gluetunFetch('/v1/vpn/settings');
+    res.header("Content-Type", 'application/json');
+    res.send(JSON.stringify(rawSettings, null, 4));
+  } catch (error) {
+    console.error('Error fetching raw settings:', error);
+    
+    if (error.message.includes('Unauthorized')) {
+      return res.status(401).json({ error: 'Unauthorized: Check Gluetun API credentials' });
+    }
+    
+    res.status(500).json({ 
+      error: "Could not fetch settings from Gluetun",
+      details: error.message 
+    });
+  }
+});
+
+// Get current settings (formatted)
+app.get('/api/settings', requireAuth, async (req, res) => {
+  try {
+    const settings = await gluetunFetch('/v1/vpn/settings');
+    
+    res.json({
+      provider: settings.provider?.name,
+      countries: settings.provider?.server_selection?.countries || [],
+      cities: settings.provider?.server_selection?.cities || [],
+      protocol: settings.provider?.port_forwarding?.enabled ? 'With Port Forwarding' : 'Standard'
     });
   } catch (error) {
+    console.error('Error fetching settings:', error);
+    
+    if (error.message.includes('Unauthorized')) {
+      return res.status(401).json({ error: 'Unauthorized: Check Gluetun API credentials' });
+    }
+    
     res.status(500).json({ error: error.message });
   }
 });
 
 // Restart VPN
-app.post('/api/restart', async (req, res) => {
+app.post('/api/restart', requireAuth, async (req, res) => {
   try {
-    // Stop VPN
     await gluetunFetch('/v1/vpn/status', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'stopped' })
     });
 
-    // Wait a moment
     await new Promise(resolve => setTimeout(resolve, 1000));
 
-    // Start VPN
     await gluetunFetch('/v1/vpn/status', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -163,11 +265,36 @@ app.post('/api/restart', async (req, res) => {
 
     res.json({ success: true, message: 'VPN restarting...' });
   } catch (error) {
+    if (error.message.includes('Unauthorized')) {
+      return res.status(401).json({ error: 'Unauthorized: Check Gluetun API credentials' });
+    }
+    
     res.status(500).json({ error: error.message });
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
+// Start server with graceful shutdown
+const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`VPN Controller running on http://0.0.0.0:${PORT}`);
   console.log(`Gluetun API: ${GLUETUN_API}`);
+  console.log(`Authentication: ${REQUIRE_AUTH ? 'ENABLED' : 'DISABLED'}`);
 });
+
+// Graceful shutdown
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+function gracefulShutdown() {
+  console.log('\nReceived shutdown signal, closing server gracefully...');
+  
+  server.close(() => {
+    console.log('Server closed. Exiting process.');
+    process.exit(0);
+  });
+
+  // Force shutdown after 10 seconds
+  setTimeout(() => {
+    console.error('Forced shutdown after timeout');
+    process.exit(1);
+  }, 10000);
+}

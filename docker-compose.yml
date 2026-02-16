@@ -70,6 +70,7 @@ services:
       - WG_DEFAULT_DNS=192.168.88.1
       - WG_DEFAULT_ADDRESS=10.13.13.x   # Different subnet than cloudbm
       - WG_ALLOWED_IPS=0.0.0.0/0
+      - WG_MTU=1320
     volumes:
       - ./wg-easy:/etc/wireguard
     restart: unless-stopped
@@ -88,8 +89,6 @@ services:
     volumes:
       - ./vpn-controller:/app
       - ./gluetun:/gluetun:ro
-      - ./.env:/.env
-      - /var/run/docker.sock:/var/run/docker.sock
       - vpn-controller-nm:/app/node_modules  # Cache node_modules
     depends_on:
       - gluetun
