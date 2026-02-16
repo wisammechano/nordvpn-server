@@ -72,10 +72,12 @@ async function gluetunFetch(endpoint, options = {}) {
 // Get current VPN status
 app.get('/api/status', requireAuth, async (req, res) => {
   try {
-    const [publicIp, vpnStatus] = await Promise.all([
+    const [publicIp, vpnStatus, realIp] = await Promise.all([
       gluetunFetch('/v1/publicip/ip'),
-      gluetunFetch('/v1/vpn/status')
+      gluetunFetch('/v1/vpn/status'),
+      fetch('https://ifconfig.co/json').then(r => r.json()).catch(() => null)
     ]);
+    
 
     res.json({
       connected: vpnStatus.status === 'running' || vpnStatus.message === 'running',
@@ -83,7 +85,12 @@ app.get('/api/status', requireAuth, async (req, res) => {
       country: publicIp.country,
       region: publicIp.region,
       city: publicIp.city,
-      status: vpnStatus.status || vpnStatus.message
+      status: vpnStatus.status || vpnStatus.message,
+      realIp: realIp ? {
+        ip: realIp.ip,
+        country: realIp.country,
+        city: realIp.city
+      } : null
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
