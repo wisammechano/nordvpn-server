@@ -577,8 +577,21 @@
             try {
                 showStatus('loading', 'Checking VPN status...');
 
-                const response = await authFetch('/api/status');
-                const data = await response.json();
+                // Fetch real IP directly from browser (CORS-friendly)
+                const realIpPromise = fetch('https://ipapi.co/json/')
+                    .then(r => r.json())
+                    .then(data => ({
+                        ip: data.ip,
+                        country: data.country_name,
+                        city: data.city
+                    }))
+                    .catch(() => null);
+
+                // Fetch VPN status from server
+                const vpnPromise = authFetch('/api/status');
+
+                const [realIpData, vpnResponse] = await Promise.all([realIpPromise, vpnPromise]);
+                const data = await vpnResponse.json();
 
                 if (data.error) {
                     throw new Error(data.error);
@@ -592,7 +605,7 @@
                 document.getElementById('currentLocation').style.display = 'block';
 
                 if (data.connected) {
-                    showStatus('connected', `✓ Connected - ${data.country || 'Unknown'}${data.city ? ', ' + data.city : ''}`);
+                    showStatus('connected', `✓ VPN Connected - ${data.country || 'Unknown'}${data.city ? ', ' + data.city : ''}`);
                 } else {
                     showStatus('disconnected', '✗ VPN Disconnected');
                 }
@@ -602,21 +615,21 @@
                 const textEl = document.getElementById('protectionText');
                 const infoEl = document.getElementById('realIpInfo');
 
-                if (!data.realIp) {
+                if (!realIpData || !realIpData.ip) {
                     statusEl.className = 'protection-status checking';
                     textEl.innerHTML = '<span class="shield-icon">⚠️</span> Unable to verify';
                     infoEl.textContent = 'Could not check real IP';
                 } else {
-                    const isProtected = data.realIp.ip === data.publicIp;
+                    const isProtected = realIpData.ip === data.publicIp;
 
                     if (isProtected) {
                         statusEl.className = 'protection-status protected';
                         textEl.innerHTML = '<span class="shield-icon">🛡️</span> PROTECTED';
-                        infoEl.textContent = `Your IP: ${data.realIp.ip} (${data.realIp.city}, ${data.realIp.country})`;
+                        infoEl.textContent = `Your IP: ${realIpData.ip} (${realIpData.city}, ${realIpData.country})`;
                     } else {
                         statusEl.className = 'protection-status unprotected';
                         textEl.innerHTML = '<span class="shield-icon">⚠️</span> UNPROTECTED';
-                        infoEl.textContent = `Real IP: ${data.realIp.ip} (${data.realIp.city}, ${data.realIp.country})`;
+                        infoEl.textContent = `Real IP: ${realIpData.ip} (${realIpData.city}, ${realIpData.country})`;
                     }
                 }
 
