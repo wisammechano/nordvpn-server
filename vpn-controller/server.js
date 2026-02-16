@@ -6,7 +6,7 @@ const app = express();
 const PORT = 3000;
 const GLUETUN_API = process.env.GLUETUN_API || 'http://gluetun:8000';
 const GLUETUN_AUTH = process.env.GLUETUN_AUTH || null;
-const REQUIRE_AUTH = process.env.REQUIRE_AUTH === 'true';
+const REQUIRE_AUTH = true;
 
 app.use(express.json());
 
